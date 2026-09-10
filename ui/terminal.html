@@ -1,1 +1,531 @@
-<!-- Terminal UI -->
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>EXROOT Terminal</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            width: 100%;
+            height: 100%;
+            background: #08090b;
+            color: #e7e9ed;
+            font-family: Consolas, "Courier New", monospace;
+            overflow: hidden;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* TOP BAR */
+
+        .topbar {
+            height: 52px;
+            border-bottom: 1px solid #25282d;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 18px;
+            background: #0c0e11;
+            flex-shrink: 0;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+
+        .brand-mark {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #d8dbe0;
+        }
+
+        .maple-status {
+            color: #9da3ad;
+            font-size: 13px;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #9da3ad;
+            margin-right: 6px;
+        }
+
+        /* MAIN TERMINAL */
+
+        .terminal {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .terminal-header {
+            padding: 18px 22px 10px;
+            color: #9da3ad;
+            font-size: 13px;
+        }
+
+        .terminal-output {
+            flex: 1;
+            overflow-y: auto;
+            padding: 5px 22px 20px;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .line {
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin: 2px 0;
+        }
+
+        .system {
+            color: #8f96a1;
+        }
+
+        .success {
+            color: #d8dbe0;
+        }
+
+        .error {
+            color: #c8a7a7;
+        }
+
+        .command {
+            color: #ffffff;
+        }
+
+        .prompt {
+            color: #aeb4bd;
+        }
+
+        /* INPUT */
+
+        .input-area {
+            border-top: 1px solid #25282d;
+            background: #0c0e11;
+            padding: 14px 22px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .prompt-symbol {
+            color: #d8dbe0;
+            white-space: nowrap;
+        }
+
+        #commandInput {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: #ffffff;
+            font-family: inherit;
+            font-size: 14px;
+            caret-color: #ffffff;
+        }
+
+        #commandInput::placeholder {
+            color: #555b64;
+        }
+
+        /* BOTTOM BAR */
+
+        .bottom-bar {
+            height: 36px;
+            border-top: 1px solid #25282d;
+            background: #090a0c;
+            display: flex;
+            align-items: center;
+            gap: 22px;
+            padding: 0 18px;
+            color: #777e88;
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+
+        .bottom-bar span {
+            cursor: default;
+        }
+
+        /* SCROLLBAR */
+
+        .terminal-output::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .terminal-output::-webkit-scrollbar-track {
+            background: #08090b;
+        }
+
+        .terminal-output::-webkit-scrollbar-thumb {
+            background: #25282d;
+            border-radius: 4px;
+        }
+
+        /* MOBILE */
+
+        @media (max-width: 700px) {
+            .topbar {
+                padding: 0 12px;
+            }
+
+            .terminal-header,
+            .terminal-output,
+            .input-area {
+                padding-left: 14px;
+                padding-right: 14px;
+            }
+
+            .bottom-bar {
+                gap: 12px;
+                padding: 0 12px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- TOP BAR -->
+
+    <header class="topbar">
+
+        <div class="brand">
+            <div class="brand-mark"></div>
+            <span>EXROOT</span>
+        </div>
+
+        <div class="maple-status">
+            <span class="status-dot"></span>
+            Maple
+        </div>
+
+    </header>
+
+
+    <!-- TERMINAL -->
+
+    <main class="terminal">
+
+        <div class="terminal-header">
+            EXROOT Terminal
+        </div>
+
+        <div
+            id="terminalOutput"
+            class="terminal-output"
+        ></div>
+
+
+        <!-- INPUT -->
+
+        <div class="input-area">
+
+            <span class="prompt-symbol">
+                exroot&gt;
+            </span>
+
+            <input
+                id="commandInput"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="enter a command..."
+            >
+
+        </div>
+
+    </main>
+
+
+    <!-- BOTTOM BAR -->
+
+    <footer class="bottom-bar">
+        <span>CVE</span>
+        <span>MAPLE</span>
+        <span>FILES</span>
+        <span>SYSTEM</span>
+        <span>HELP</span>
+    </footer>
+
+
+    <script>
+
+        const output =
+            document.getElementById("terminalOutput");
+
+        const input =
+            document.getElementById("commandInput");
+
+
+        /*
+         * TERMINAL OUTPUT
+         */
+
+        function print(text, type = "system") {
+
+            const line =
+                document.createElement("div");
+
+            line.className =
+                "line " + type;
+
+            line.textContent =
+                text;
+
+            output.appendChild(line);
+
+            output.scrollTop =
+                output.scrollHeight;
+        }
+
+
+        /*
+         * STARTUP
+         */
+
+        print("EXROOT Terminal");
+        print("CVE command environment initialized.");
+        print("Type 'cve help' for available commands.");
+        print("");
+
+
+        /*
+         * COMMAND HANDLER
+         */
+
+        function executeCommand(command) {
+
+            const trimmed =
+                command.trim();
+
+            if (!trimmed) {
+                return;
+            }
+
+
+            /*
+             * Display command
+             */
+
+            print(
+                "exroot> " + trimmed,
+                "command"
+            );
+
+
+            /*
+             * Basic local commands
+             *
+             * These are UI-level commands for now.
+             * Real CVE execution will be connected
+             * to the Python engine.
+             */
+
+            const parts =
+                trimmed.split(/\s+/);
+
+            const first =
+                parts[0].toLowerCase();
+
+
+            /*
+             * CLEAR
+             */
+
+            if (
+                first === "clear" ||
+                first === "cls"
+            ) {
+
+                output.innerHTML = "";
+
+                return;
+            }
+
+
+            /*
+             * HELP
+             */
+
+            if (
+                first === "help" ||
+                trimmed === "cve help"
+            ) {
+
+                print("CVE command environment");
+                print("");
+                print("cve help");
+                print("cve version");
+                print("cve system");
+                print("cve mkdir <path>");
+                print("cve list <path>");
+                print("cve read <file>");
+                print("");
+                print(
+                    "More commands are provided by the EXROOT command registry."
+                );
+
+                return;
+            }
+
+
+            /*
+             * VERSION
+             */
+
+            if (
+                trimmed === "cve version" ||
+                trimmed === "version"
+            ) {
+
+                print(
+                    "EXROOT version 0.1.0",
+                    "success"
+                );
+
+                return;
+            }
+
+
+            /*
+             * SYSTEM
+             */
+
+            if (
+                trimmed === "cve system" ||
+                trimmed === "system"
+            ) {
+
+                print("System: EXROOT");
+                print("Command environment: CVE");
+                print("Intelligence: Maple");
+                print("Runtime: host runtime");
+
+                return;
+            }
+
+
+            /*
+             * DEMO MKDIR
+             *
+             * This does NOT create anything yet.
+             * It demonstrates the UI response until
+             * the browser is connected to the EXROOT
+             * Python backend.
+             */
+
+            if (first === "cve" && parts[1] === "mkdir") {
+
+                const path =
+                    parts.slice(2).join(" ");
+
+                if (!path) {
+
+                    print(
+                        "Error: mkdir requires a path.",
+                        "error"
+                    );
+
+                    return;
+                }
+
+                print(
+                    "CVE → filesystem.mkdir",
+                    "system"
+                );
+
+                print(
+                    "Waiting for EXROOT runtime...",
+                    "system"
+                );
+
+                return;
+            }
+
+
+            /*
+             * UNKNOWN COMMAND
+             */
+
+            print(
+                "Command received: " + trimmed
+            );
+
+            print(
+                "CVE execution backend is not connected to the UI yet.",
+                "system"
+            );
+        }
+
+
+        /*
+         * ENTER KEY
+         */
+
+        input.addEventListener(
+            "keydown",
+            function(event) {
+
+                if (event.key !== "Enter") {
+                    return;
+                }
+
+                const command =
+                    input.value;
+
+                input.value = "";
+
+                executeCommand(command);
+            }
+        );
+
+
+        /*
+         * ALWAYS FOCUS TERMINAL
+         */
+
+        window.addEventListener(
+            "load",
+            function() {
+                input.focus();
+            }
+        );
+
+
+        document.addEventListener(
+            "click",
+            function() {
+                input.focus();
+            }
+        );
+
+    </script>
+
+</body>
+</html>
+```
+
