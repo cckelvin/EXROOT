@@ -1,4 +1,3 @@
-```python
 """
 EXROOT CVE Engine
 
@@ -141,32 +140,47 @@ class CVEEngine:
         # 4. Resolve CVE API function
         # ---------------------------------------------------------
 
-        api_name = self.registry.resolve_api_for_command(
+        resolved = self.registry.resolve_api_for_command(
             command
         )
 
-        if not api_name:
+        if not resolved:
+            # Fallback: command may already carry an api mapping
+            # from the local defaults registry.
+            resolved = command.get("api_function") or command.get("api")
+
+        if not resolved:
             return self._error(
                 f"No API function is mapped to CVE command "
                 f"'{command_name}'.",
                 command=command_name,
             )
 
-        # ---------------------------------------------------------
-        # 5. Verify API function exists in registry
-        # ---------------------------------------------------------
-
-        api_function = self.registry.get_api_function(
-            api_name
-        )
-
-        if not api_function:
-            return self._error(
-                f"API function '{api_name}' was not found "
-                f"in the API registry.",
-                command=command_name,
-                api=api_name,
+        # resolve_api_for_command may return a dict or a name string.
+        if isinstance(resolved, dict):
+            api_function = resolved
+            api_name = (
+                resolved.get("function")
+                or resolved.get("name")
+                or resolved.get("api")
             )
+        else:
+            api_name = str(resolved)
+            api_function = self.registry.get_api_function(api_name)
+
+        if not api_name:
+            return self._error(
+                f"Unable to determine API function name for "
+                f"CVE command '{command_name}'.",
+                command=command_name,
+            )
+
+        # ---------------------------------------------------------
+        # 5. Prefer registry metadata when available
+        # ---------------------------------------------------------
+
+        if api_function is None:
+            api_function = self.registry.get_api_function(api_name)
 
         # ---------------------------------------------------------
         # 6. Verify the operational CVE API has the function
@@ -174,38 +188,36 @@ class CVEEngine:
 
         if not self.api.exists(api_name):
             return self._error(
-                f"API function '{api_name}' is registered in "
-                f"Airtable but has no operational implementation "
-                f"in the CVE API.",
+                f"API function '{api_name}' has no operational "
+                f"implementation in the CVE API.",
                 command=command_name,
                 api=api_name,
             )
 
         # ---------------------------------------------------------
-        # 7. Resolve runtime mapping
-        #
-        # This verifies that the API has a runtime implementation.
-        # The actual runtime invocation remains inside CVE API.
+        # 7. Resolve runtime mapping (optional metadata check)
         # ---------------------------------------------------------
 
-        runtime_name = self.registry.resolve_runtime_for_api(
-            api_function
-        )
+        runtime_name = None
+        if api_function:
+            runtime_meta = self.registry.resolve_runtime_for_api(
+                api_function
+            )
+            if isinstance(runtime_meta, dict):
+                runtime_name = (
+                    runtime_meta.get("runtime_function")
+                    or runtime_meta.get("function")
+                    or runtime_meta.get("name")
+                )
+            elif runtime_meta is not None:
+                runtime_name = str(runtime_meta)
 
         if runtime_name is None:
-            return self._error(
-                f"No runtime function is mapped to API "
-                f"'{api_name}'.",
-                command=command_name,
-                api=api_name,
-            )
+            # Local defaults / operational API already map to runtime.
+            runtime_name = api_name
 
         # ---------------------------------------------------------
         # 8. Prepare API arguments
-        #
-        # CVE command arguments are passed to the API layer.
-        # The API layer is responsible for translating them into
-        # the runtime implementation.
         # ---------------------------------------------------------
 
         api_args = list(args)
@@ -358,4 +370,3 @@ def self_test() -> bool:
 
 if __name__ == "__main__":
     print("CVE Engine self-test:", self_test())
-```
