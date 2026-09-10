@@ -28,6 +28,8 @@ import os
 import platform
 from pathlib import Path
 
+from shell_helpers import display_result, print_cve_help
+
 
 # ============================================================
 # EXROOT INFORMATION
@@ -93,6 +95,9 @@ def print_help() -> None:
     print()
     print("  cve <command> [arguments]")
     print("      Execute a CVE command.")
+    print()
+    print("  cve help")
+    print("      List available CVE commands.")
     print()
     print("  help")
     print("      Show this help message.")
@@ -171,7 +176,6 @@ def create_engine():
     try:
         return CVEEngine()
     except TypeError:
-        # Allows the engine to be implemented incrementally.
         try:
             return CVEEngine(ROOT_DIR)
         except Exception:
@@ -204,10 +208,6 @@ def execute_cve_command(command_line: str, engine) -> None:
         print("Example: cve mkdir project")
         return
 
-    # --------------------------------------------------------
-    # Parse command
-    # --------------------------------------------------------
-
     if parse_command is None:
         print("[CVE] Parser is not available.")
         return
@@ -218,17 +218,15 @@ def execute_cve_command(command_line: str, engine) -> None:
         print(f"[CVE] Parser error: {error}")
         return
 
-    # --------------------------------------------------------
-    # Display parser errors
-    # --------------------------------------------------------
-
     if parsed is None:
         print("[CVE] Unable to parse command.")
         return
 
-    # --------------------------------------------------------
-    # Execute through engine
-    # --------------------------------------------------------
+    command_name = str(parsed.get("command") or "").lower()
+
+    if command_name in {"help", "commands", "cmds"}:
+        print_cve_help(engine)
+        return
 
     if engine is None:
         print("[CVE] Engine is not available.")
@@ -237,11 +235,9 @@ def execute_cve_command(command_line: str, engine) -> None:
 
     try:
 
-        # Preferred engine interface.
         if hasattr(engine, "execute"):
             result = engine.execute(parsed)
 
-        # Alternative interface for incremental development.
         elif hasattr(engine, "run"):
             result = engine.run(parsed)
 
@@ -253,62 +249,6 @@ def execute_cve_command(command_line: str, engine) -> None:
 
     except Exception as error:
         print(f"[CVE] Execution error: {error}")
-
-
-# ============================================================
-# RESULT DISPLAY
-# ============================================================
-
-def display_result(result) -> None:
-    """Display a result returned by the CVE engine."""
-
-    if result is None:
-        return
-
-    # Dictionary result
-    if isinstance(result, dict):
-
-        success = result.get("success")
-
-        if success is False:
-            error = result.get("error", "Command failed.")
-            print(f"[CVE] Error: {error}")
-            return
-
-        # Normal result output
-        output = result.get("output")
-
-        if output is not None:
-            if isinstance(output, (dict, list)):
-                print(output)
-            else:
-                print(str(output))
-
-        # Some APIs return data instead of output.
-        elif "data" in result:
-            data = result["data"]
-
-            if isinstance(data, (dict, list)):
-                print(data)
-            else:
-                print(str(data))
-
-        # Generic result
-        elif success is True:
-            print("[CVE] Command completed successfully.")
-
-        else:
-            print(result)
-
-        return
-
-    # String result
-    if isinstance(result, str):
-        print(result)
-        return
-
-    # Other result types
-    print(result)
 
 
 # ============================================================
@@ -349,10 +289,6 @@ def run_shell() -> None:
         if not command_line:
             continue
 
-        # ----------------------------------------------------
-        # Built-in EXROOT commands
-        # ----------------------------------------------------
-
         lower_command = command_line.lower()
 
         if lower_command in ("exit", "quit"):
@@ -375,17 +311,9 @@ def run_shell() -> None:
             clear_terminal()
             continue
 
-        # ----------------------------------------------------
-        # CVE command
-        # ----------------------------------------------------
-
         if lower_command.startswith("cve "):
             execute_cve_command(command_line, engine)
             continue
-
-        # ----------------------------------------------------
-        # Invalid shell input
-        # ----------------------------------------------------
 
         print(
             "[EXROOT] Unknown input. "
@@ -444,9 +372,6 @@ def startup_checks() -> bool:
 
         print()
 
-        # Do not stop startup.
-        # Some components may be added later.
-
     return True
 
 
@@ -460,10 +385,6 @@ def main() -> None:
     """
 
     startup_checks()
-
-    # --------------------------------------------------------
-    # Single-command mode
-    # --------------------------------------------------------
 
     if len(sys.argv) > 1:
 
@@ -479,10 +400,6 @@ def main() -> None:
 
         run_single_command(command_line)
         return
-
-    # --------------------------------------------------------
-    # Interactive mode
-    # --------------------------------------------------------
 
     print_banner()
     run_shell()
