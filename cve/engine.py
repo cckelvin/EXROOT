@@ -1,621 +1,361 @@
+```python
 """
 EXROOT CVE Engine
 
-The CVE engine is the execution coordinator.
+Execution flow:
 
-Flow:
-
-    Parsed command
-          ↓
-       Registry
-          ↓
-     Command definition
-          ↓
-       API function
-          ↓
-    Runtime function
-          ↓
-       Host system
-
-The engine does NOT contain the command list.
-
-The Commands table is the authoritative source for
-command-level confirmation policy.
+CVE command
+    ↓
+Registry
+    ↓
+API Function
+    ↓
+CVE API
+    ↓
+Runtime Function
+    ↓
+Host OS
 """
 
-from __future__ import annotations
+from typing import Any, Dict, Optional
 
-import importlib
-import inspect
-from pathlib import Path
-from typing import Any
+from cve.registry import CVERegistry
+from cve.api import CVEAPI, CVEAPIError
 
-from cve.registry import CVERegistry, RegistryError
-
-
-# ============================================================
-# ENGINE ERROR
-# ============================================================
 
 class CVEEngineError(Exception):
-    """Raised when CVE execution fails."""
+    """Raised when CVE command execution fails."""
 
-
-# ============================================================
-# CVE ENGINE
-# ============================================================
 
 class CVEEngine:
+    """Main execution engine for CVE commands."""
 
     def __init__(
         self,
-        root_dir: str | Path | None = None,
-        registry: CVERegistry | None = None,
-    ) -> None:
+        registry: Optional[CVERegistry] = None,
+        api: Optional[CVEAPI] = None,
+    ):
+        self.registry = registry or CVERegistry()
+        self.api = api or CVEAPI()
 
-        self.root_dir = Path(
-            root_dir
-            if root_dir is not None
-            else Path(__file__).resolve().parent.parent
-        )
+        self.initialized = False
 
-        self.registry = (
-            registry
-            if registry is not None
-            else CVERegistry()
-        )
+    def initialize(self) -> Dict[str, Any]:
+        """Initialize the CVE registry."""
 
-        self.loaded = False
+        result = self.registry.load()
 
-    # ========================================================
-    # START ENGINE
-    # ========================================================
+        self.initialized = True
 
-    def initialize(self) -> dict[str, int]:
+        return {
+            "success": True,
+            "registry": result,
+            "api": self.api.status(),
+        }
 
-        try:
+    def execute(self, parsed_command: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a parsed CVE command.
 
-            counts = self.registry.load()
+        Expected input:
 
-            self.loaded = True
+        {
+            "system": "cve",
+            "command": "mkdir",
+            "args": ["project"],
+            "raw": "cve mkdir project"
+        }
+        """
 
-            return counts
+        if not self.initialized:
+            self.initialize()
 
-        except RegistryError as error:
-
-            raise CVEEngineError(
-                f"Unable to initialize CVE registry: {error}"
-            ) from error
-
-    # ========================================================
-    # ENSURE REGISTRY
-    # ========================================================
-
-    def _ensure_registry(self) -> None:
-
-        if self.loaded:
-            return
-
-        # Try to load local cache first.
-        cache_path = (
-            self.root_dir
-            / ".exroot"
-            / "registry.json"
-        )
-
-        if self.registry.load_cache(cache_path):
-
-            self.loaded = True
-            return
-
-        self.initialize()
-
-        # Save the Airtable registry locally.
-        try:
-            self.registry.save_cache(
-                cache_path
-            )
-        except Exception:
-            pass
-
-    # ========================================================
-    # COMMAND EXECUTION
-    # ========================================================
-
-    def execute(
-        self,
-        parsed: dict[str, Any],
-    ) -> dict[str, Any]:
-
-        self._ensure_registry()
-
-        if not isinstance(parsed, dict):
-
-            return self.error(
-                "Invalid parsed command."
-            )
-
-        command_name = parsed.get(
-            "command"
-        )
+        command_name = parsed_command.get("command")
+        args = parsed_command.get("args", [])
+        raw = parsed_command.get("raw", "")
 
         if not command_name:
-
-            return self.error(
-                "No command specified."
+            return self._error(
+                "No CVE command was provided."
             )
 
-        # ----------------------------------------------------
-        # Find command in registry
-        # ----------------------------------------------------
+        # ---------------------------------------------------------
+        # 1. Look up command in the Commands registry
+        # ---------------------------------------------------------
 
-        command = self.registry.get_command(
-            command_name
-        )
+        command = self.registry.get_command(command_name)
 
-        if command is None:
-
-            return self.error(
+        if not command:
+            return self._error(
                 f"Unknown CVE command: {command_name}"
             )
 
-        # ----------------------------------------------------
-        # Check command status
-        # ----------------------------------------------------
+        # ---------------------------------------------------------
+        # 2. Check command status
+        # ---------------------------------------------------------
 
-        status = command.get("status")
+        status = str(command.get("status", "active")).lower()
 
-        if isinstance(status, str):
-
-            if status.lower() in {
-                "disabled",
-                "inactive",
-                "deprecated",
-            }:
-
-                return self.error(
-                    f"Command '{command_name}' "
-                    f"is not active."
-                )
-
-        # ----------------------------------------------------
-        # Confirmation
-        # ----------------------------------------------------
-
-        if self.requires_confirmation(command):
-
-            confirmed = self.request_confirmation(
-                command,
-                parsed,
+        if status in {
+            "disabled",
+            "inactive",
+            "deprecated",
+            "blocked",
+        }:
+            return self._error(
+                f"CVE command '{command_name}' is not available.",
+                command=command_name,
+                status=status,
             )
 
-            if not confirmed:
+        # ---------------------------------------------------------
+        # 3. Check confirmation policy
+        #
+        # Commands table is the authoritative source.
+        # ---------------------------------------------------------
 
-                return {
-                    "success": False,
-                    "cancelled": True,
-                    "command": command_name,
-                    "message": "Command cancelled.",
-                }
+        confirmation_required = self._to_bool(
+            command.get("confirmation_required")
+        )
 
-        # ----------------------------------------------------
-        # Resolve API
-        # ----------------------------------------------------
+        if confirmation_required:
+            confirmation_type = command.get(
+                "confirmation_type",
+                "standard",
+            )
 
-        api = self.registry.resolve_api_for_command(
+            confirmation_prompt = command.get(
+                "confirmation_prompt"
+            )
+
+            return {
+                "success": False,
+                "status": "confirmation_required",
+                "command": command_name,
+                "confirmation_type": confirmation_type,
+                "prompt": confirmation_prompt
+                or f"Confirm execution of: {raw}",
+            }
+
+        # ---------------------------------------------------------
+        # 4. Resolve CVE API function
+        # ---------------------------------------------------------
+
+        api_name = self.registry.resolve_api_for_command(
             command
         )
 
-        if api is None:
-
-            return self.error(
-                f"No API function mapping found "
-                f"for command '{command_name}'."
+        if not api_name:
+            return self._error(
+                f"No API function is mapped to CVE command "
+                f"'{command_name}'.",
+                command=command_name,
             )
 
-        # ----------------------------------------------------
-        # Resolve runtime
-        # ----------------------------------------------------
+        # ---------------------------------------------------------
+        # 5. Verify API function exists in registry
+        # ---------------------------------------------------------
 
-        runtime = self.registry.resolve_runtime_for_api(
-            api
+        api_function = self.registry.get_api_function(
+            api_name
         )
 
-        if runtime is None:
-
-            return self.error(
-                f"No runtime mapping found "
-                f"for API '{api.get('function')}'."
+        if not api_function:
+            return self._error(
+                f"API function '{api_name}' was not found "
+                f"in the API registry.",
+                command=command_name,
+                api=api_name,
             )
 
-        # ----------------------------------------------------
-        # Execute runtime
-        # ----------------------------------------------------
+        # ---------------------------------------------------------
+        # 6. Verify the operational CVE API has the function
+        # ---------------------------------------------------------
 
-        return self.execute_runtime(
-            parsed,
-            command,
-            api,
-            runtime,
+        if not self.api.exists(api_name):
+            return self._error(
+                f"API function '{api_name}' is registered in "
+                f"Airtable but has no operational implementation "
+                f"in the CVE API.",
+                command=command_name,
+                api=api_name,
+            )
+
+        # ---------------------------------------------------------
+        # 7. Resolve runtime mapping
+        #
+        # This verifies that the API has a runtime implementation.
+        # The actual runtime invocation remains inside CVE API.
+        # ---------------------------------------------------------
+
+        runtime_name = self.registry.resolve_runtime_for_api(
+            api_function
         )
 
-    # ========================================================
-    # CONFIRMATION POLICY
-    # ========================================================
+        if runtime_name is None:
+            return self._error(
+                f"No runtime function is mapped to API "
+                f"'{api_name}'.",
+                command=command_name,
+                api=api_name,
+            )
+
+        # ---------------------------------------------------------
+        # 8. Prepare API arguments
+        #
+        # CVE command arguments are passed to the API layer.
+        # The API layer is responsible for translating them into
+        # the runtime implementation.
+        # ---------------------------------------------------------
+
+        api_args = list(args)
+
+        # ---------------------------------------------------------
+        # 9. Execute through CVE API
+        # ---------------------------------------------------------
+
+        try:
+            result = self.api.call(
+                api_name,
+                api_args,
+                {},
+            )
+
+        except CVEAPIError as exc:
+            return self._error(
+                str(exc),
+                command=command_name,
+                api=api_name,
+                runtime=runtime_name,
+            )
+
+        except Exception as exc:
+            return self._error(
+                f"Execution failed: {exc}",
+                command=command_name,
+                api=api_name,
+                runtime=runtime_name,
+            )
+
+        # ---------------------------------------------------------
+        # 10. Return structured execution result
+        # ---------------------------------------------------------
+
+        return {
+            "success": True,
+            "status": "executed",
+            "command": command_name,
+            "args": api_args,
+            "api": api_name,
+            "runtime": runtime_name,
+            "result": result,
+        }
+
+    def command_info(
+        self,
+        command_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return registry information for a CVE command."""
+
+        command = self.registry.get_command(command_name)
+
+        if not command:
+            return None
+
+        api_name = self.registry.resolve_api_for_command(
+            command
+        )
+
+        api_function = None
+
+        if api_name:
+            api_function = self.registry.get_api_function(
+                api_name
+            )
+
+        runtime_name = None
+
+        if api_function:
+            runtime_name = self.registry.resolve_runtime_for_api(
+                api_function
+            )
+
+        return {
+            "command": command,
+            "api": api_function,
+            "runtime": runtime_name,
+            "operational_api": (
+                self.api.exists(api_name)
+                if api_name
+                else False
+            ),
+        }
+
+    def status(self) -> Dict[str, Any]:
+        """Return engine status."""
+
+        return {
+            "initialized": self.initialized,
+            "registry": self.registry.status(),
+            "api": self.api.status(),
+        }
 
     @staticmethod
-    def requires_confirmation(
-        command: dict[str, Any],
-    ) -> bool:
-
-        value = command.get(
-            "confirmation_required",
-            False,
-        )
+    def _to_bool(value: Any) -> bool:
+        """Convert common Airtable boolean values to bool."""
 
         if isinstance(value, bool):
             return value
 
-        if isinstance(value, str):
+        if value is None:
+            return False
 
+        if isinstance(value, str):
             return value.strip().lower() in {
                 "true",
                 "yes",
-                "required",
                 "1",
+                "required",
             }
 
         if isinstance(value, (int, float)):
-
-            return bool(value)
+            return value != 0
 
         return False
 
-    # ========================================================
-    # REQUEST CONFIRMATION
-    # ========================================================
-
     @staticmethod
-    def request_confirmation(
-        command: dict[str, Any],
-        parsed: dict[str, Any],
-    ) -> bool:
-
-        prompt = command.get(
-            "confirmation_prompt"
-        )
-
-        if not prompt:
-
-            prompt = (
-                f"Execute '{parsed.get('raw', '')}'?"
-            )
-
-        print()
-        print(f"[CVE] {prompt}")
-        print("Type 'yes' to continue.")
-
-        try:
-            answer = input(
-                "Confirm: "
-            ).strip().lower()
-
-        except (KeyboardInterrupt, EOFError):
-
-            print()
-            return False
-
-        return answer in {
-            "yes",
-            "y",
-        }
-
-    # ========================================================
-    # RUNTIME EXECUTION
-    # ========================================================
-
-    def execute_runtime(
-        self,
-        parsed: dict[str, Any],
-        command: dict[str, Any],
-        api: dict[str, Any],
-        runtime: dict[str, Any],
-    ) -> dict[str, Any]:
-
-        runtime_function = runtime.get(
-            "runtime_function"
-        )
-
-        implementation_file = runtime.get(
-            "implementation_file"
-        )
-
-        if not runtime_function:
-
-            return self.error(
-                "Runtime function has no name."
-            )
-
-        # ----------------------------------------------------
-        # Locate implementation
-        # ----------------------------------------------------
-
-        module = self.load_runtime_module(
-            runtime,
-            implementation_file,
-        )
-
-        if module is None:
-
-            return self.error(
-                f"Runtime implementation not found "
-                f"for '{runtime_function}'."
-            )
-
-        # ----------------------------------------------------
-        # Determine function name
-        # ----------------------------------------------------
-
-        function_name = self.runtime_callable_name(
-            runtime_function
-        )
-
-        function = getattr(
-            module,
-            function_name,
-            None,
-        )
-
-        # Try generic "execute" implementation.
-        if function is None:
-
-            function = getattr(
-                module,
-                "execute",
-                None,
-            )
-
-        if function is None:
-
-            return self.error(
-                f"Runtime module does not implement "
-                f"'{function_name}'."
-            )
-
-        # ----------------------------------------------------
-        # Build execution context
-        # ----------------------------------------------------
-
-        context = {
-            "command": command,
-            "api": api,
-            "runtime": runtime,
-            "parsed": parsed,
-            "args": parsed.get(
-                "args",
-                [],
-            ),
-            "options": parsed.get(
-                "options",
-                {},
-            ),
-        }
-
-        # ----------------------------------------------------
-        # Call runtime function
-        # ----------------------------------------------------
-
-        try:
-
-            result = self.call_runtime(
-                function,
-                context,
-            )
-
-            return {
-                "success": True,
-                "command": parsed.get("command"),
-                "api": api.get("function"),
-                "runtime": runtime_function,
-                "result": result,
-            }
-
-        except Exception as error:
-
-            return self.error(
-                str(error),
-                command=parsed.get("command"),
-                api=api.get("function"),
-                runtime=runtime_function,
-            )
-
-    # ========================================================
-    # LOAD RUNTIME MODULE
-    # ========================================================
-
-    def load_runtime_module(
-        self,
-        runtime: dict[str, Any],
-        implementation_file: Any,
-    ):
-
-        candidates = []
-
-        if implementation_file:
-
-            if isinstance(
-                implementation_file,
-                list,
-            ):
-
-                for item in implementation_file:
-
-                    if isinstance(item, dict):
-                        item = (
-                            item.get("name")
-                            or item.get("filename")
-                        )
-
-                    candidates.append(
-                        str(item)
-                    )
-
-            else:
-
-                candidates.append(
-                    str(implementation_file)
-                )
-
-        runtime_name = runtime.get(
-            "runtime_function"
-        )
-
-        if runtime_name:
-
-            parts = runtime_name.split(".")
-
-            if len(parts) >= 2:
-
-                candidates.append(
-                    "runtime."
-                    + parts[1]
-                )
-
-        for candidate in candidates:
-
-            candidate = candidate.replace(
-                "\\",
-                "/",
-            )
-
-            # ----------------------------------------------
-            # Python module path
-            # ----------------------------------------------
-
-            if candidate.endswith(".py"):
-
-                candidate = candidate[:-3]
-
-            candidate = candidate.replace(
-                "/",
-                ".",
-            )
-
-            if candidate.startswith("."):
-                candidate = candidate[1:]
-
-            try:
-
-                return importlib.import_module(
-                    candidate
-                )
-
-            except ImportError:
-                pass
-
-        return None
-
-    # ========================================================
-    # RUNTIME CALLABLE NAME
-    # ========================================================
-
-    @staticmethod
-    def runtime_callable_name(
-        runtime_function: str,
-    ) -> str:
-
-        """
-        Convert:
-
-            runtime.filesystem.mkdir
-
-        into:
-
-            mkdir
-        """
-
-        return runtime_function.split(".")[-1]
-
-    # ========================================================
-    # CALL RUNTIME
-    # ========================================================
-
-    @staticmethod
-    def call_runtime(
-        function,
-        context: dict[str, Any],
-    ):
-
-        """
-        Call a runtime implementation.
-
-        Runtime functions can eventually use either:
-
-            function(context)
-
-        or:
-
-            function(args, options)
-
-        The engine supports both patterns.
-        """
-
-        try:
-
-            signature = inspect.signature(
-                function
-            )
-
-            parameters = list(
-                signature.parameters.values()
-            )
-
-        except (TypeError, ValueError):
-
-            return function(context)
-
-        # No parameters.
-        if not parameters:
-
-            return function()
-
-        # One parameter.
-        if len(parameters) == 1:
-
-            return function(context)
-
-        # Two or more parameters.
-        return function(
-            context["args"],
-            context["options"],
-        )
-
-    # ========================================================
-    # ERROR RESULT
-    # ========================================================
-
-    @staticmethod
-    def error(
+    def _error(
         message: str,
-        **extra,
-    ) -> dict[str, Any]:
+        **details: Any,
+    ) -> Dict[str, Any]:
+        """Create a standard CVE error response."""
 
-        result = {
+        response = {
             "success": False,
+            "status": "error",
             "error": message,
         }
 
-        result.update(extra)
+        response.update(details)
 
-        return result
+        return response
 
-    # ========================================================
-    # ENGINE STATUS
-    # ========================================================
 
-    def status(self) -> dict[str, Any]:
+def self_test() -> bool:
+    """Basic engine self-test."""
 
-        return {
-            "engine_loaded": self.loaded,
-            **self.registry.status(),
-        }
+    engine = CVEEngine()
+
+    assert engine.initialized is False
+
+    status = engine.status()
+
+    assert "registry" in status
+    assert "api" in status
+
+    return True
+
+
+if __name__ == "__main__":
+    print("CVE Engine self-test:", self_test())
+```
