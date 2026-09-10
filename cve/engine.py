@@ -78,20 +78,12 @@ class CVEEngine:
                 "No CVE command was provided."
             )
 
-        # ---------------------------------------------------------
-        # 1. Look up command in the Commands registry
-        # ---------------------------------------------------------
-
         command = self.registry.get_command(command_name)
 
         if not command:
             return self._error(
                 f"Unknown CVE command: {command_name}"
             )
-
-        # ---------------------------------------------------------
-        # 2. Check command status
-        # ---------------------------------------------------------
 
         status = str(command.get("status", "active")).lower()
 
@@ -106,12 +98,6 @@ class CVEEngine:
                 command=command_name,
                 status=status,
             )
-
-        # ---------------------------------------------------------
-        # 3. Check confirmation policy
-        #
-        # Commands table is the authoritative source.
-        # ---------------------------------------------------------
 
         confirmation_required = self._to_bool(
             command.get("confirmation_required")
@@ -136,17 +122,11 @@ class CVEEngine:
                 or f"Confirm execution of: {raw}",
             }
 
-        # ---------------------------------------------------------
-        # 4. Resolve CVE API function
-        # ---------------------------------------------------------
-
         resolved = self.registry.resolve_api_for_command(
             command
         )
 
         if not resolved:
-            # Fallback: command may already carry an api mapping
-            # from the local defaults registry.
             resolved = command.get("api_function") or command.get("api")
 
         if not resolved:
@@ -156,7 +136,6 @@ class CVEEngine:
                 command=command_name,
             )
 
-        # resolve_api_for_command may return a dict or a name string.
         if isinstance(resolved, dict):
             api_function = resolved
             api_name = (
@@ -175,16 +154,8 @@ class CVEEngine:
                 command=command_name,
             )
 
-        # ---------------------------------------------------------
-        # 5. Prefer registry metadata when available
-        # ---------------------------------------------------------
-
         if api_function is None:
             api_function = self.registry.get_api_function(api_name)
-
-        # ---------------------------------------------------------
-        # 6. Verify the operational CVE API has the function
-        # ---------------------------------------------------------
 
         if not self.api.exists(api_name):
             return self._error(
@@ -193,10 +164,6 @@ class CVEEngine:
                 command=command_name,
                 api=api_name,
             )
-
-        # ---------------------------------------------------------
-        # 7. Resolve runtime mapping (optional metadata check)
-        # ---------------------------------------------------------
 
         runtime_name = None
         if api_function:
@@ -213,18 +180,9 @@ class CVEEngine:
                 runtime_name = str(runtime_meta)
 
         if runtime_name is None:
-            # Local defaults / operational API already map to runtime.
             runtime_name = api_name
 
-        # ---------------------------------------------------------
-        # 8. Prepare API arguments
-        # ---------------------------------------------------------
-
         api_args = list(args)
-
-        # ---------------------------------------------------------
-        # 9. Execute through CVE API
-        # ---------------------------------------------------------
 
         try:
             result = self.api.call(
@@ -249,10 +207,6 @@ class CVEEngine:
                 runtime=runtime_name,
             )
 
-        # ---------------------------------------------------------
-        # 10. Return structured execution result
-        # ---------------------------------------------------------
-
         return {
             "success": True,
             "status": "executed",
@@ -274,28 +228,55 @@ class CVEEngine:
         if not command:
             return None
 
-        api_name = self.registry.resolve_api_for_command(
+        resolved = self.registry.resolve_api_for_command(
             command
         )
 
         api_function = None
+        api_name = None
 
-        if api_name:
-            api_function = self.registry.get_api_function(
-                api_name
+        if isinstance(resolved, dict):
+            api_function = resolved
+            api_name = (
+                resolved.get("function")
+                or resolved.get("name")
+                or resolved.get("api")
+            )
+        elif resolved is not None:
+            api_name = str(resolved)
+            api_function = self.registry.get_api_function(api_name)
+
+        if api_function is None and api_name:
+            api_function = self.registry.get_api_function(api_name)
+
+        if api_name is None and isinstance(api_function, dict):
+            api_name = (
+                api_function.get("function")
+                or api_function.get("name")
             )
 
+        runtime_meta = None
         runtime_name = None
 
         if api_function:
-            runtime_name = self.registry.resolve_runtime_for_api(
+            runtime_meta = self.registry.resolve_runtime_for_api(
                 api_function
             )
+            if isinstance(runtime_meta, dict):
+                runtime_name = (
+                    runtime_meta.get("runtime_function")
+                    or runtime_meta.get("function")
+                    or runtime_meta.get("name")
+                )
+            elif runtime_meta is not None:
+                runtime_name = str(runtime_meta)
 
         return {
             "command": command,
             "api": api_function,
-            "runtime": runtime_name,
+            "api_name": api_name,
+            "runtime": runtime_meta,
+            "runtime_name": runtime_name,
             "operational_api": (
                 self.api.exists(api_name)
                 if api_name
